@@ -24,6 +24,10 @@ const PUBLIC_WORKFLOW = 'public-ci.yml';
 const DESCRIPTION_WORKFLOW = 'pr-description.yml';
 // The site deployment: the `site` profile here, its own rules in tests/site-workflow.test.ts.
 const SITE_WORKFLOW = 'site.yml';
+// The backport workflow (the one `pull_request_target` workflow: the `backport` profile, tests/backport-workflow.test.ts)
+// and the branch policy checks (the `policy` profile, tests/branch-policy.test.ts).
+const BACKPORT_WORKFLOW = 'backport.yml';
+const POLICY_WORKFLOW = 'branch-policy.yml';
 // Checked by tests/release-workflow.test.ts, with its own profile.
 const RELEASE_WORKFLOW = 'release.yml';
 
@@ -181,11 +185,13 @@ describe('public CI workflow checker', () => {
 
 describe('the public CI as committed', () => {
   test('only the public workflows exist (no private workflow left)', () => {
-    assert.deepEqual(workflowFiles(), [DESCRIPTION_WORKFLOW, PUBLIC_WORKFLOW, RELEASE_WORKFLOW, SITE_WORKFLOW]);
+    assert.deepEqual(workflowFiles(), [BACKPORT_WORKFLOW, POLICY_WORKFLOW, DESCRIPTION_WORKFLOW, PUBLIC_WORKFLOW, RELEASE_WORKFLOW, SITE_WORKFLOW]);
   });
 
   for (const name of workflowFiles().filter((file) => file !== RELEASE_WORKFLOW)) {
-    const profile: Profile = name === DESCRIPTION_WORKFLOW ? 'description' : name === SITE_WORKFLOW ? 'site' : 'public';
+    const profiles: Record<string, Profile> = {[DESCRIPTION_WORKFLOW]: 'description', [SITE_WORKFLOW]: 'site', [BACKPORT_WORKFLOW]: 'backport',
+      [POLICY_WORKFLOW]: 'policy'};
+    const profile: Profile = profiles[name] ?? 'public';
     const text = fs.readFileSync(path.join(WORKFLOWS, name), 'utf8');
 
     test(`${name} satisfies every invariant`, () => {
@@ -201,6 +207,11 @@ describe('the public CI as committed', () => {
       const triggers = blockOf(lines, onIndex).filter((line) => line.indent === 2).map((line) => line.key);
       assert.ok(triggers.includes('push') && triggers.includes('pull_request'), `triggers: ${triggers.join(', ')}`);
       assert.match(text, /^permissions:\n {2}contents: read\n/m);
+    });
+
+    // main and the maintenance branches are tested after every push (CONTRIBUTING.md, "Branches and versions").
+    test(`${name} also runs on every push to a release/** branch`, () => {
+      assert.match(text, /^ {2}push:\n(?: {4}#.*\n)* {4}branches: \[main, "release\/\*\*"\]\n/m);
     });
 
     test(`${name} gives the Node tests a bash 3.2 (MESH_BASH32), so the installer parse test runs`, () => {

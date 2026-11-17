@@ -143,3 +143,29 @@ export function commandAt(lines: Line[], index: number): string {
   for (let next = index; lines[next].raw.trimEnd().endsWith('\\') && next + 1 < lines.length; next++) parts.push(lines[next + 1].raw);
   return parts.join('\n');
 }
+
+// Every `${{ ... }}` of the raw text (comments included, possibly spanning lines), and every
+// `if:` value with its continuation lines (folded `>-` included), which GitHub evaluates as an
+// expression even without `${{ }}`.
+export function expressions(lines: Line[]): {number: number; body: string}[] {
+  const text = lines.map((line) => line.raw).join('\n');
+  const found: {number: number; body: string}[] = [];
+  for (const match of text.matchAll(/\$\{\{([\s\S]*?)\}\}/g)) {
+    found.push({number: text.slice(0, match.index).split('\n').length, body: match[1]});
+  }
+  lines.forEach((line, index) => {
+    if (line.key !== 'if') return;
+    found.push({number: line.number, body: [line.value, ...continuation(lines, index).map((item) => item.raw)].join('\n')});
+  });
+  return found;
+}
+
+// Property names read from the `github` context in an expression (case-insensitive, as GitHub
+// reads them); null when the context is used whole (`toJSON(github)`) or by a computed index.
+export function githubProperties(body: string): (string | null)[] {
+  return [...body.matchAll(/(?<![\w.-])github\b/gi)].map((match) => {
+    const rest = body.slice((match.index ?? 0) + match[0].length);
+    const property = /^\s*(?:\.\s*([\w-]+)|\[\s*(['"])(.*?)\2\s*\])/.exec(rest);
+    return property ? (property[1] ?? property[3]).toLowerCase() : null;
+  });
+}

@@ -9,42 +9,17 @@
 // allowed use of the pull request body), `site` (site.yml: the public rules, except that the
 // `deploy` job alone may hold `pages: write` and `id-token: write`; no secret) and `release` (release.yml: the
 // shared rules plus the checks of tests/release-workflow-checks.ts).
-import {blockOf, commandAt, continuation, jobBlocks, type Line, MAX_TIMEOUT_MINUTES, parseLines, permissionValues, stepOf, timeoutProblems,
+import {blockOf, commandAt, expressions, githubProperties, jobBlocks, type Line, MAX_TIMEOUT_MINUTES, parseLines, permissionValues, stepOf, timeoutProblems,
   usesOf} from './public-ci-workflow-lib.ts';
+import {BACKPORT_CHECKS, checkBackportEvent, checkBackportPermissions, checkBackportSecrets, checkBackportTriggers} from './backport-workflow-checks.ts';
 import {checkReleasePermissions, checkReleaseRunners, checkReleaseTimeouts, RELEASE_CHECKS, releaseTokenLines} from './release-workflow-checks.ts';
 
-export type Profile = 'public' | 'description' | 'release' | 'site';
+export type Profile = 'public' | 'description' | 'release' | 'site' | 'policy' | 'backport';
 
 // The one place where untrusted event text may enter an expression: the description workflow hands
 // the pull request body to its script through an environment variable.
 export const BODY_ENV_LINE = /^\s+BODY: \$\{\{ github\.event\.pull_request\.body \}\}\s*$/;
 export const RUNNER = 'ubuntu-24.04';
-
-// Every `${{ ... }}` of the raw text (comments included, possibly spanning lines), and every
-// `if:` value with its continuation lines (folded `>-` included), which GitHub evaluates as an
-// expression even without `${{ }}`.
-function expressions(lines: Line[]): {number: number; body: string}[] {
-  const text = lines.map((line) => line.raw).join('\n');
-  const found: {number: number; body: string}[] = [];
-  for (const match of text.matchAll(/\$\{\{([\s\S]*?)\}\}/g)) {
-    found.push({number: text.slice(0, match.index).split('\n').length, body: match[1]});
-  }
-  lines.forEach((line, index) => {
-    if (line.key !== 'if') return;
-    found.push({number: line.number, body: [line.value, ...continuation(lines, index).map((item) => item.raw)].join('\n')});
-  });
-  return found;
-}
-
-// Property names read from the `github` context in an expression (case-insensitive, as GitHub
-// reads them); null when the context is used whole (`toJSON(github)`) or by a computed index.
-function githubProperties(body: string): (string | null)[] {
-  return [...body.matchAll(/(?<![\w.-])github\b/gi)].map((match) => {
-    const rest = body.slice((match.index ?? 0) + match[0].length);
-    const property = /^\s*(?:\.\s*([\w-]+)|\[\s*(['"])(.*?)\2\s*\])/.exec(rest);
-    return property ? (property[1] ?? property[3]).toLowerCase() : null;
-  });
-}
 
 const UNPARSED: [RegExp, string, 'raw' | 'text'][] = [
   [/\\/, 'backslash outside a block scalar', 'raw'],
@@ -167,7 +142,8 @@ function keepsCredentials(lines: Line[], index: number): boolean {
   return !inputs.some((input) => input.column === inputColumn && input.key === 'persist-credentials' && input.value === 'false');
 }
 
-function checkActions(lines: Line[]): string[] {
+// `keepsNoCredentials`: every checkout drops its credentials (the backport profile is the one exception).
+function checkActions(lines: Line[], keepsNoCredentials = true): string[] {
   const problems: string[] = [];
   lines.forEach((line, index) => {
     if (line.inBlock) return;
@@ -175,7 +151,7 @@ function checkActions(lines: Line[]): string[] {
       if (action.startsWith('./') || action.startsWith('docker://')) continue;
       if (!PINNED_ACTION.test(action)) {
         problems.push(`line ${line.number}: action ${action} not pinned by full commit SHA`);
-      } else if (action.startsWith('actions/checkout@') && keepsCredentials(lines, index)) {
+      } else if (keepsNoCredentials && action.startsWith('actions/checkout@') && keepsCredentials(lines, index)) {
         problems.push(`line ${line.number}: checkout without persist-credentials: false`);
       }
     }
@@ -238,14 +214,55 @@ function checkLeakRules(lines: Line[]): string[] {
   return problems;
 }
 
+// The `policy` profile (branch-policy.yml): the public rules, and the run's token named in one place,
+// `GITHUB_TOKEN: ${{ github.token }}` in the env of a script step (no action) of the release-guard
+// job, which reads pull requests with a read-only token.
+export const POLICY_TOKEN_JOB = 'release-guard';
+const POLICY_TOKEN_LINE = /^\s+GITHUB_TOKEN: \$\{\{ github\.token \}\}\s*$/;
+
+function policyTokenLines(lines: Line[]): Set<Line> {
+  const job = jobBlocks(lines).find((item) => item.name === POLICY_TOKEN_JOB)?.block ?? [];
+  const allowed = new Set<Line>();
+  for (const env of job.filter((line) => line.key === 'env' && !line.inBlock)) {
+    const step = stepOf(lines, lines.indexOf(env));
+    if (!step.some((item) => item.key === 'run') || step.some((item) => usesOf(item).length > 0)) continue;
+    for (const line of blockOf(lines, lines.indexOf(env))) if (POLICY_TOKEN_LINE.test(line.raw)) allowed.add(line);
+  }
+  return allowed;
+}
+
+type Check = (items: Line[]) => string[];
+
+// The checks that differ from one profile to the next.
+function profileChecks(profile: Profile): {runners: Check; secrets: Check; injection: Check; actions: Check; triggers: Check;
+  permissions: Check; timeouts: Check} {
+  const shared = {runners: checkRunners, secrets: (items: Line[]) => checkSecrets(items), injection: (items: Line[]) => checkInjection(items),
+    actions: (items: Line[]) => checkActions(items), triggers: checkTriggers, permissions: checkPermissions, timeouts: checkTimeouts};
+  switch (profile) {
+    case 'release':
+      return {...shared, runners: checkReleaseRunners, secrets: (items) => checkSecrets(items, releaseTokenLines(items)),
+        permissions: checkReleasePermissions, timeouts: checkReleaseTimeouts};
+    case 'site':
+      return {...shared, permissions: checkSitePermissions};
+    case 'description':
+      return {...shared, injection: (items) => checkInjection(items, true)};
+    case 'policy':
+      return {...shared, secrets: (items) => checkSecrets(items, policyTokenLines(items))};
+    case 'backport':
+      return {...shared, secrets: checkBackportSecrets, injection: checkBackportEvent, actions: (items) => checkActions(items, false),
+        triggers: checkBackportTriggers, permissions: checkBackportPermissions};
+    default:
+      return shared;
+  }
+}
+
 export function checkWorkflow(text: string, profile: Profile = 'public'): string[] {
   const lines = parseLines(text);
-  const release = profile === 'release';
-  const secrets = (items: Line[]) => checkSecrets(items, release ? releaseTokenLines(items) : new Set());
-  const checks: ((items: Line[]) => string[])[] = [checkUnparsed, release ? checkReleaseRunners : checkRunners, secrets,
-    (items) => checkInjection(items, profile === 'description'), checkActions, checkImages, checkContinueOnError, checkTriggers,
-    release ? checkReleasePermissions : profile === 'site' ? checkSitePermissions : checkPermissions, release ? checkReleaseTimeouts : checkTimeouts, checkLeakRules];
-  if (!release) checks.push(checkDockerImages);
-  if (release) checks.push(...RELEASE_CHECKS);
+  const picked = profileChecks(profile);
+  const checks: Check[] = [checkUnparsed, picked.runners, picked.secrets, picked.injection, picked.actions, checkImages, checkContinueOnError,
+    picked.triggers, picked.permissions, picked.timeouts, checkLeakRules];
+  if (profile !== 'release') checks.push(checkDockerImages);
+  if (profile === 'release') checks.push(...RELEASE_CHECKS);
+  if (profile === 'backport') checks.push(...BACKPORT_CHECKS);
   return checks.flatMap((check) => check(lines));
 }

@@ -13,7 +13,8 @@ name: public-ci
 
 on:
   push:
-    branches: [main]
+    # main, and the maintenance branches (release/0.1, ...): CONTRIBUTING.md, "Branches and versions".
+    branches: [main, "release/**"]
   pull_request:
     # The default three, plus `edited`: a pull request whose base branch is changed is checked
     # again against the new base (the cla job; tools/cla-check/SPEC.md). Every job runs on it, so
@@ -494,13 +495,14 @@ jobs:
     steps:
       # The job runs on every event, because a skipped job satisfies a required check: a
       # workflow_dispatch on the branch of a pull request would otherwise attach a skipped `cla`
-      # to its head commit. Outside a pull request it fails, except on main, where the commits
-      # were integrated already and there is nothing left to judge.
-      - name: Refuse to pass outside a pull request, except on main
+      # to its head commit. Outside a pull request it fails, except on main and on a maintenance
+      # branch (release/**), where the commits were integrated already, through a pull request that
+      # the check judged, and there is nothing left to judge.
+      - name: Refuse to pass outside a pull request, except on main and release branches
         if: github.event_name != 'pull_request'
         run: |
-          if [[ "$GITHUB_REF" == refs/heads/main ]]; then
-            echo "cla: nothing verified. These commits are on main already; the cla check judges pull requests."
+          if [[ "$GITHUB_REF" == refs/heads/main || "$GITHUB_REF" == refs/heads/release/* ]]; then
+            echo "cla: nothing verified. These commits are on ${GITHUB_REF#refs/heads/} already; the cla check judges pull requests."
           else
             echo "::error::the cla check only runs on pull requests (ref: $GITHUB_REF)"
             exit 1

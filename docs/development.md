@@ -93,6 +93,45 @@ detects it. Two ways out, narrowest first:
 opam's own build sandbox also uses bubblewrap, so the same restriction can stop `opam switch create`;
 the same two ways apply.
 
+## Backports to the maintenance branch
+
+For maintainers. The rules for contributors (target `main`, the `semver:` labels, `release/0.1`)
+are in [CONTRIBUTING.md](../CONTRIBUTING.md#branches-and-versions). Three workflows implement
+them: `branch-policy.yml` (the checks `semver label` and `release branch guard`, from
+`tools/branch-policy/branch-policy.ts`), `backport.yml` (the cherry-pick and the pull request to
+`release/0.1`) and `release.yml` (a tag on `release/0.1` is accepted). `tests/backport-workflow.test.ts`
+and `tests/branch-policy.test.ts` keep their safety rules.
+
+**One-time setup of the backport workflow.**
+
+1. Register a GitHub App owned by the organisation, without webhook, with the repository
+   permissions Contents and Pull requests set to read and write, and Workflows too if backports may
+   change `.github/workflows`; install it on this repository only.
+2. Store its numeric App ID as the repository secret `BACKPORT_APP_ID` and a generated private key
+   as `BACKPORT_APP_PRIVATE_KEY`. With them, the backport pull request is opened by the App and
+   its CI starts. Without them the workflow uses the run's own token: the pull request is opened,
+   GitHub starts no workflow for it, and a comment on it asks a maintainer to close and reopen it
+   to start the CI.
+3. The workflow runs on `pull_request_target`, which GitHub blocks on public repositories from
+   2026-12-02 unless an Actions policy allows it: add a policy for `.github/workflows/backport.yml`
+   that allows `pull_request_target`.
+4. Add the checks `semver label` and `release branch guard` to the required checks of `main`, and
+   the same two, `cla` and the CI jobs to those of `release/**`.
+
+**Safety of `pull_request_target`.** The job checks out the base branch, never the pull request,
+runs none of its code, reads only booleans, the number and label names of the event, and gives a
+write token to a third-party action pinned by commit SHA (`korthout/backport-action`).
+The cherry-picked commits keep their authors; their committer is `GitHub <noreply@github.com>`,
+which the `cla` job accepts. The `release branch guard` only checks that the description points
+to a merged `semver: patch` pull request: the review of the backport pull request is what checks
+that the changes are the same.
+
+**Cutting 0.1.x.** Merge the backports, update the changelog on `release/0.1`, tag the release
+branch tip `v0.1.x`: `release.yml` publishes it, and as a version older than the latest release
+it is not marked latest once 0.2.0 exists. Then add the release to `site/releases.json` and the
+changelog heading to `main` by a pull request labelled `semver: minor`: the site is deployed from
+`main` only.
+
 ## Languages
 
 The web server is written in Python, but no new Python is accepted: the project is converging on

@@ -16,6 +16,9 @@ reviews:
   auto_review:
     enabled: true
     drafts: false
+    # Pull requests to the default branch are reviewed already; also those to a maintenance
+    # branch (release/0.1, ...), the backports (CONTRIBUTING.md, "Branches and versions").
+    base_branches: ["release/.*"]
   path_filters:
     - "!static/vendor/**"
     - "!package-lock.json"

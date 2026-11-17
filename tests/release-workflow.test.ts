@@ -52,6 +52,8 @@ jobs:
       - run: |
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
           git merge-base --is-ancestor "$commit" refs/remotes/origin/main
+          git fetch --no-tags origin "+refs/heads/release/$series:refs/remotes/origin/release/$series"
+          git merge-base --is-ancestor "$commit" "refs/remotes/origin/release/$series"
   linux:
     runs-on: \${{ matrix.runner }}
     timeout-minutes: 90
@@ -143,6 +145,8 @@ function problemsOf(text: string): string {
 
 const FETCH_MAIN = '          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main\n';
 const MERGE_BASE = '          git merge-base --is-ancestor "$commit" refs/remotes/origin/main\n';
+const FETCH_RELEASE = '          git fetch --no-tags origin "+refs/heads/release/$series:refs/remotes/origin/release/$series"\n';
+const MERGE_BASE_RELEASE = '          git merge-base --is-ancestor "$commit" "refs/remotes/origin/release/$series"\n';
 const MACOS_BUNDLE = '  macos-bundle:\n    runs-on: macos-15\n    timeout-minutes: 90\n    steps';
 const LINUX_SMOKE = '      - run: bash scripts/release-smoke.sh "$RUNNER_TEMP/out"\n  macos:';
 
@@ -264,6 +268,8 @@ describe('the release workflow checker', () => {
     ['a write job that does not wait for the tag job', '    needs: [tag, package]', '    needs: [package]', /job publish: needs must be exactly \[tag, package\]/],
     ['no main check in the tag job', MERGE_BASE, '', /job tag: no check that the tag names a commit of main/],
     ['a main check without fetching main', FETCH_MAIN, '', /job tag: no check that the tag names a commit of main/],
+    ['no release branch check in the tag job', MERGE_BASE_RELEASE, '', /job tag: no check that the tag names a commit of its release branch/],
+    ['a release branch check without fetching it', FETCH_RELEASE, '', /job tag: no check that the tag names a commit of its release branch/],
     ['a signature file', '-- dist/*', '-- dist/* dist/SHA256SUMS.sig', /signature file or SSH signing/],
     ['SSH signing', '      - run: echo hi\n  package', '      - run: ssh-keygen -Y sign -n x SHA256SUMS\n  publish', /signature file or SSH signing/],
     ['a looser tag pattern', '=~ ^v[0-9]+', '=~ ^v[0-9]', /tag pattern other than/],
@@ -473,9 +479,9 @@ describe('release.yml as committed', () => {
     assert.equal(job(RELEASE_WRITE_JOB).find((line) => line.key === 'needs')?.value, '[tag, package]');
   });
 
-  test('the tag job checks out the full history and checks main, for tag pushes only, read-only', () => {
+  test('the tag job checks out the full history and checks main or its release branch, for tag pushes only, read-only', () => {
     assert.match(raw('tag'), /actions\/checkout@[0-9a-f]{40} # [^\n]*\n\s+if: github\.event_name == 'push'\n\s+with:\n\s+persist-credentials: false\n\s+fetch-depth: 0\n/);
-    assert.match(raw('tag'), /- name: Check that the tag names a commit of main\n\s+if: github\.event_name == 'push'\n/);
+    assert.match(raw('tag'), /- name: Check that the tag names a commit of main or of its release branch\n\s+if: github\.event_name == 'push'\n/);
     assert.ok(!job('tag').some((line) => line.key === 'permissions'), 'the tag job keeps the read-only default');
   });
 

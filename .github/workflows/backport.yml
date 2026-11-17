@@ -1,0 +1,94 @@
+# Automatic backport of a fix to the maintenance branch (CONTRIBUTING.md, "Branches and versions").
+# When a pull request labelled `semver: patch` is merged to main (or gets that label after it was
+# merged), the commits it landed are cherry-picked onto a new branch from release/0.1, and a pull
+# request "[0.1] <original title>" to release/0.1 is opened with the label `semver: patch` and
+# the line "Backport of #<number>" (which the release branch guard of branch-policy.yml checks).
+# When a cherry-pick conflicts, nothing is pushed and the action comments on the original pull
+# request with the commands to backport it by hand.
+#
+# Trigger and token. The job runs on `pull_request_target` so that it holds a write token when the
+# merged pull request comes from a fork. That is safe here because the job never runs code of the
+# pull request: its checkout is the base branch (no `ref`, no other repository), its only script
+# only comments, and the one third-party action that holds the token (korthout/backport-action)
+# is pinned by full commit SHA and fetches the merged commits through git itself. The label gate
+# and the base branch gate read booleans and label names of the event, never free text. GitHub
+# blocks this trigger on public repositories from 2026-12-02 unless an Actions policy allows it
+# for this file (docs/development.md, "Backports to the maintenance branch").
+#
+# The backport pull request is opened with a GitHub App token (secrets BACKPORT_APP_ID and
+# BACKPORT_APP_PRIVATE_KEY), so that the CI runs on it. Without these two secrets, the run's own
+# token opens it: GitHub starts no workflow for a pull request opened that way, and a comment
+# on it tells the maintainers to start the CI (close and reopen it).
+# The cherry-picked commits keep their author; their committer is GitHub's, which the cla job accepts.
+# tests/backport-workflow.test.ts and tests/public-ci-workflow.test.ts enforce these rules.
+name: backport
+
+on:
+  pull_request_target:
+    types: [closed, labeled]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backport-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  backport:
+    name: backport to release/0.1
+    if: >-
+      github.event.pull_request.merged == true &&
+      contains(github.event.pull_request.labels.*.name, 'semver: patch') &&
+      (github.event.action == 'closed' || github.event.label.name == 'semver: patch')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      # Only the boolean reaches the steps, never a secret.
+      HAS_APP_TOKEN: ${{ secrets.BACKPORT_APP_ID != '' && secrets.BACKPORT_APP_PRIVATE_KEY != '' }}
+    steps:
+      - name: Create the GitHub App token
+        id: app-token
+        if: env.HAS_APP_TOKEN == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.BACKPORT_APP_ID }}
+          private-key: ${{ secrets.BACKPORT_APP_PRIVATE_KEY }}
+      # The base branch, never the pull request: the action pushes the backport branch with these
+      # credentials, so they stay in the checkout.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          token: ${{ steps.app-token.outputs.token || github.token }}
+      - name: Create the backport pull request
+        id: backport
+        uses: korthout/backport-action@ad272ff24e4a8593bf18a951a154ae6af93b26b8 # v5.0.0
+        with:
+          github_token: ${{ steps.app-token.outputs.token || github.token }}
+          target_branches: release/0.1
+          add_labels: "semver: patch"
+          pull_title: "[0.1] ${pull_title}"
+          pull_description: |-
+            Backport of #${pull_number} to `${target_branch}`.
+
+            Cherry-picked from the merged pull request by the backport workflow (CONTRIBUTING.md, "Branches and versions"). Review it like any other pull request.
+          git_committer_name: GitHub
+          git_committer_email: noreply@github.com
+      - name: Tell the maintainers to start the CI
+        if: env.HAS_APP_TOKEN != 'true' && steps.backport.outputs.created_pull_numbers != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CREATED: ${{ steps.backport.outputs.created_pull_numbers }}
+        run: |
+          body="This pull request was opened with the run's own token, and GitHub starts no workflow for such a pull request: the CI has not run. A maintainer starts it by closing and reopening this pull request. (The backport workflow opens its pull requests with a GitHub App when the secrets BACKPORT_APP_ID and BACKPORT_APP_PRIVATE_KEY are set; see 'Branches and versions' in CONTRIBUTING.md.)"
+          for number in $CREATED; do
+            [[ "$number" =~ ^[0-9]+$ ]] || continue
+            gh pr comment "$number" --repo "$GITHUB_REPOSITORY" --body "$body"
+          done

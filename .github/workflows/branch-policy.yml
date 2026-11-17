@@ -1,0 +1,66 @@
+# Branch policy of pull requests (CONTRIBUTING.md, "Branches and versions"), two checks:
+# - `semver label`: a pull request to main carries exactly one of the labels `semver: patch` and
+#   `semver: minor`;
+# - `release branch guard`: a pull request to a release/** branch is a backport: it carries
+#   `semver: patch` and says "Backport of #<number>" for a pull request merged to main that carries
+#   `semver: patch` too.
+# Both run on every pull request, whatever its base, and pass when the rule is not theirs: a skipped
+# job would count as a passed required check. They run again when a label changes. The rules are
+# in tools/branch-policy/branch-policy.ts, which reads the pull request from the event file, so no
+# text of the pull request enters an expression. A pull request is unprivileged here
+# (`pull_request`, a read-only token, no secret); the guard's token only reads pull requests.
+# tests/public-ci-workflow.test.ts and tests/branch-policy.test.ts enforce these rules.
+name: branch-policy
+
+on:
+  pull_request:
+    # The label changes, and `edited`, which is also a change of base branch or of description.
+    types: [opened, reopened, synchronize, edited, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: branch-policy-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  NODE_VERSION: "24"
+
+jobs:
+  semver-label:
+    name: semver label
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: A pull request to main carries exactly one semver label
+        run: node --experimental-strip-types tools/branch-policy/branch-policy.ts semver-label
+
+  release-guard:
+    name: release branch guard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: A pull request to a release branch is a backport of a merged patch
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node --experimental-strip-types tools/branch-policy/branch-policy.ts release-guard

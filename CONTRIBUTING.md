@@ -101,6 +101,40 @@ Without it the test is skipped, unless `MESH_REQUIRE_ITF_ADAPTER=1` is set, in w
   any other contribution. AI attribution lines (for example "Generated with ...") are welcome in commit messages and pull
   request descriptions.
 
+### Branches and versions
+
+Every pull request targets `main`, whatever it changes. Releases of a series that is already
+published (0.1.x while `main` prepares 0.2) are cut from a maintenance branch, `release/0.1`,
+which was created from the tag `v0.1.0`. A contributor never opens a pull request against it by
+hand for a normal fix: it is filled by backports.
+
+- **One label per pull request.** A pull request to `main` carries exactly one of
+  `semver: patch` (a fix that the maintenance branch should also get) and `semver: minor`
+  (everything else: features, changes, documentation and CI that belong to the next minor
+  version). The check `semver label` fails without exactly one, and runs again when a label
+  changes. A maintainer sets the label if you cannot.
+- **Backport.** When a pull request labelled `semver: patch` is merged to `main` (or receives the
+  label after it was merged), a workflow cherry-picks its commits onto a branch from `release/0.1`
+  and opens the pull request `[0.1] <original title>`, labelled `semver: patch`, whose description
+  says `Backport of #<number>`. It is reviewed and merged like any other pull request, with
+  "Rebase and merge". When a cherry-pick conflicts, the workflow comments on the original pull
+  request with the commands to do it by hand: open that pull request to `release/0.1` yourself,
+  keep the label and the line `Backport of #<number>`.
+- **The guard.** A pull request whose base is `release/**` must carry `semver: patch` and
+  reference, with `Backport of #<number>`, a pull request merged to `main` that carries
+  `semver: patch` too; the check `release branch guard` fails otherwise. A fix that only concerns
+  the maintenance branch is first made on `main` when the code exists there.
+- **Tags.** A tag `v0.1.x` is pushed on a commit of `release/0.1`; the release workflow accepts a
+  tag on `main` or on the release branch of its series, and publishes a version older than the
+  current latest release without marking it "latest".
+- **Site and changelog.** The showcase site is deployed from `main` only: a release of a
+  maintenance branch is added to `site/releases.json` by a pull request to `main` (label
+  `semver: minor`, since the site is not backported), with its `CHANGELOG.md` heading.
+
+The public CI runs on every push to `release/**` as it does on `main`, and CodeRabbit reviews
+pull requests to `release/**`. The maintainers' setup of the backport workflow is in
+[docs/development.md](docs/development.md#backports-to-the-maintenance-branch).
+
 ### How a pull request is merged
 
 Pull requests are merged with **"Rebase and merge" only**: GitHub replays the commits of the pull

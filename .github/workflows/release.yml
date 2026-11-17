@@ -16,9 +16,11 @@
 # The package job assembles the files (scripts/release-assets.sh bundle).
 #
 # Triggers: a push of a tag v<major>.<minor>.<patch>[-<suffix>] publishes the release; the tag must
-# name a commit of main (the tag job checks it against origin/main). A tag with a -<suffix> is
+# name a commit of main, or of the maintenance branch release/<major>.<minor> of its series (the tag
+# job checks both against origin; v0.1.3 is cut on release/0.1). A tag with a -<suffix> is
 # published as a pre-release, which GitHub never reports as the latest release; a release older
-# (semver) than the current latest one is published with --latest=false. A manual run is a
+# (semver) than the current latest one is published with --latest=false (v0.1.3 after v0.2.0 is not
+# the latest). A manual run is a
 # dry run: it builds, checks and keeps the files as a workflow artifact, and never creates a tag or
 # a release; a manual run on main also seeds the opam caches the tag runs read.
 #
@@ -96,7 +98,7 @@ env:
 
 jobs:
   # The release name, decided once, before any build: the pushed tag, or a dry-run name for a
-  # manual run. Refuses a name outside the tag pattern, and a tag whose commit is not on main, so
+  # manual run. Refuses a name outside the tag pattern, and a tag whose commit is neither on main nor on its release branch, so
   # that no build starts for a release that cannot be published.
   tag:
     name: release tag
@@ -124,9 +126,10 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      # The tag must name the built commit, and that commit must be on main as it is now: a tag
-      # pushed on a branch that is not merged, or on a commit main no longer holds, is refused.
-      - name: Check that the tag names a commit of main
+      # The tag must name the built commit, and that commit must be on main as it is now, or on the
+      # maintenance branch of the tag's series (v0.1.3 is cut on release/0.1): a tag pushed on a
+      # branch that is not merged, or on a commit no longer held by one of these two, is refused.
+      - name: Check that the tag names a commit of main or of its release branch
         if: github.event_name == 'push'
         env:
           RELEASE_TAG: ${{ steps.name.outputs.tag }}
@@ -138,11 +141,21 @@ jobs:
             echo "::error::tag $RELEASE_TAG names $tagged, not the built commit $commit"
             exit 1
           fi
-          if ! git merge-base --is-ancestor "$commit" refs/remotes/origin/main; then
-            echo "::error::$RELEASE_TAG names $commit, which is not on main: tag a commit of main"
-            exit 1
+          if git merge-base --is-ancestor "$commit" refs/remotes/origin/main; then
+            echo "$RELEASE_TAG names $commit, on main"
+            exit 0
           fi
-          echo "$RELEASE_TAG names $commit, on main"
+          # v<major>.<minor>.<patch>[-<suffix>] was checked above: the series is <major>.<minor>.
+          series="${RELEASE_TAG#v}"
+          series="${series%%-*}"
+          series="${series%.*}"
+          if git fetch --no-tags origin "+refs/heads/release/$series:refs/remotes/origin/release/$series" &&
+            git merge-base --is-ancestor "$commit" "refs/remotes/origin/release/$series"; then
+            echo "$RELEASE_TAG names $commit, on release/$series"
+            exit 0
+          fi
+          echo "::error::$RELEASE_TAG names $commit, which is not on main or on release/$series: tag a commit of one of them"
+          exit 1
 
   linux:
     name: ${{ matrix.target }} (static musl)

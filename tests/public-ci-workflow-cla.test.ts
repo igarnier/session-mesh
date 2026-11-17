@@ -36,7 +36,7 @@ describe('the cla job of the public CI', () => {
     const body = claJob();
     assert.doesNotMatch(body, /^ {4}if:/m, 'a job-level condition would skip the job');
     assert.match(body, /^ {8}if: github\.event_name != 'pull_request'$/m);
-    assert.match(body, /\[\[ "\$GITHUB_REF" == refs\/heads\/main \]\]/);
+    assert.ok(body.includes('if [[ "$GITHUB_REF" == refs/heads/main || "$GITHUB_REF" == refs/heads/release/* ]]; then'));
     assert.ok(body.includes('the cla check only runs on pull requests'));
     assert.match(body, /exit 1/);
   });
@@ -47,7 +47,7 @@ describe('the cla job of the public CI', () => {
     for (const step of steps.slice(1)) assert.match(step, /^ {8}if: github\.event_name == 'pull_request'$|^if: github\.event_name == 'pull_request'$/m);
   });
 
-  test('the guard passes on refs/heads/main and fails on any other ref, saying why', () => {
+  test('the guard passes on refs/heads/main and release/**, and fails on any other ref, saying why', () => {
     const body = claJob();
     const start = body.indexOf('if [[');
     const script = body.slice(start, body.indexOf('\n      - if:')).replace(/^ {10}/gm, '');
@@ -55,9 +55,17 @@ describe('the cla job of the public CI', () => {
     const onMain = run('refs/heads/main');
     assert.equal(onMain.status, 0);
     assert.match(onMain.stdout, /nothing verified/);
-    const elsewhere = run('refs/heads/feature');
-    assert.equal(elsewhere.status, 1);
-    assert.match(elsewhere.stdout, /the cla check only runs on pull requests/);
+    assert.match(onMain.stdout, /on main already/);
+    const onRelease = run('refs/heads/release/0.1');
+    assert.equal(onRelease.status, 0);
+    assert.match(onRelease.stdout, /nothing verified.*on release\/0\.1 already/);
+    // The check of record stays on pull requests: a branch that is not main or under release/ fails.
+    for (const ref of ['refs/heads/feature', 'refs/heads/release', 'refs/heads/releases/0.1', 'refs/heads/main-x', 'refs/heads/x/release/0.1',
+      'refs/tags/release/0.1', 'refs/tags/v0.1.0', 'refs/pull/1/merge', '']) {
+      const elsewhere = run(ref);
+      assert.equal(elsewhere.status, 1, ref);
+      assert.match(elsewhere.stdout, /the cla check only runs on pull requests/, ref);
+    }
   });
 
   test('takes base, head and merge from the test merge commit and runs the base branch\'s checker', () => {
