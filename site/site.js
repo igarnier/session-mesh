@@ -294,6 +294,33 @@ function toggleDrawer() {
   $("#btn-menu").setAttribute("aria-expanded", String(open));
 }
 
+// On a phone, as in session-mesh: a swipe right from the left edge opens the sessions,
+// a swipe left on the open drawer closes it. Only a deliberate horizontal move counts.
+function bindSwipe() {
+  // Touch events, not pointer events: a browser that starts scrolling cancels the pointer.
+  let gesture = null;
+  const excluded = (target) => target.closest("input,textarea,select,button,dialog");
+  document.addEventListener("touchstart", (event) => {
+    gesture = null;
+    if (!isPhone() || event.touches.length !== 1 || excluded(event.target)) return;
+    const touch = event.touches[0];
+    const open = document.body.classList.contains("drawer");
+    if (!(open ? event.target.closest("#side") : touch.clientX < 40)) return;
+    gesture = { x: touch.clientX, y: touch.clientY, at: performance.now(), open };
+  }, { capture: true, passive: true });
+  document.addEventListener("touchmove", (event) => {
+    const start = gesture;
+    if (!start || event.touches.length !== 1) { gesture = null; return; }
+    const touch = event.touches[0];
+    const dx = touch.clientX - start.x, dy = touch.clientY - start.y;
+    if (performance.now() - start.at >= 500 || (Math.abs(dy) > 12 && Math.abs(dy) > Math.abs(dx))) { gesture = null; return; }
+    if (Math.abs(dx) < 50 || Math.abs(dx) < 2 * Math.abs(dy)) return;
+    gesture = null;
+    if (start.open ? dx < 0 : dx > 0) toggleDrawer();
+  }, { capture: true, passive: true });
+  for (const name of ["touchend", "touchcancel"]) document.addEventListener(name, () => { gesture = null; }, { capture: true, passive: true });
+}
+
 // ---------------------------------------------------------------- session states and the nudge
 
 function itemState(id) {
@@ -572,6 +599,7 @@ function bindShell() {
   $("#filter").addEventListener("keydown", (e) => { if (e.key === "ArrowDown") { e.preventDefault(); moveFocus(0); } });
   $("#content").addEventListener("click", finishTyping);
   $("#btn-menu").addEventListener("click", toggleDrawer);
+  bindSwipe();
   $("#btn-panel").addEventListener("click", () => setDoc(!view.docOpen));
   $("#btn-doc-close").addEventListener("click", () => setDoc(false));
   $$(".workspace-tab[data-pane]").forEach((t) => t.addEventListener("click", () => showPane(t.dataset.pane)));
